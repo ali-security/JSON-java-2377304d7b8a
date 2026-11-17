@@ -162,6 +162,17 @@ public class JSONObject {
     static final Pattern NUMBER_PATTERN = Pattern.compile("-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
 
     /**
+     * Maximum number of decimal digits allowed in the integer part of a value
+     * converted to a {@link BigInteger} by {@link #objectToBigInteger(Object, BigInteger)}.
+     * Mirrors the upstream {@code ParserConfiguration.DEFAULT_MAX_NUMBER_LENGTH}.
+     * Values whose integer part would exceed this many digits are treated as
+     * unconvertible, preventing a short exponent literal such as
+     * {@code 1e100000000} from expanding into a huge BigInteger
+     * (CVE-2026-59171).
+     */
+    private static final int MAX_BIGINTEGER_DIGITS = 1000;
+
+    /**
      * The map where the JSONObject's properties are kept.
      */
     private final Map<String, Object> map;
@@ -1245,7 +1256,15 @@ public class JSONObject {
             return (BigInteger) val;
         }
         if (val instanceof BigDecimal){
-            return ((BigDecimal) val).toBigInteger();
+            BigDecimal bd = (BigDecimal) val;
+            // Same ceiling as the upstream parse-time maxNumberLength guard: refuse to
+            // materialise an integer whose decimal representation would exceed
+            // MAX_BIGINTEGER_DIGITS digits. Prevents DoS via short exponent
+            // literals like 1e100000000 (CVE-2026-59171, see issue #1063).
+            if ((long) bd.precision() - bd.scale() > MAX_BIGINTEGER_DIGITS) {
+                return defaultValue;
+            }
+            return bd.toBigInteger();
         }
         if (val instanceof Double || val instanceof Float){
             if (!numberIsFinite((Number)val)) {
@@ -1266,7 +1285,11 @@ public class JSONObject {
             // that type cast support that may truncate the decimal.
             final String valStr = val.toString();
             if(isDecimalNotation(valStr)) {
-                return new BigDecimal(valStr).toBigInteger();
+                BigDecimal bd = new BigDecimal(valStr);
+                if ((long) bd.precision() - bd.scale() > MAX_BIGINTEGER_DIGITS) {
+                    return defaultValue;
+                }
+                return bd.toBigInteger();
             }
             return new BigInteger(valStr);
         } catch (Exception e) {
